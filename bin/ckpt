@@ -1,0 +1,35 @@
+#!/usr/bin/env python3
+"""ckpt: resumable chunked jobs. ckpt init JOB ITEMS_FILE | next JOB | done JOB ITEM [--note TEXT] | status JOB
+State: ./.ckpt/JOB.json (atomic writes). A killed or rate-limited run resumes at the first undone item."""
+import json, os, sys, time, fcntl
+D = os.path.expanduser(os.environ.get("CKPT_HOME", "./.ckpt")); os.makedirs(D, exist_ok=True)
+def path(j): return os.path.join(D, j.replace("/", "_") + ".json")
+def load(j):
+    with open(path(j)) as f: return json.load(f)
+def save(j, s):
+    t = path(j) + ".tmp"
+    with open(t, "w") as f: json.dump(s, f, indent=1); f.flush(); os.fsync(f.fileno())
+    os.replace(t, path(j))
+def main(a):
+    if len(a) < 2: print(__doc__); return 2
+    cmd, j = a[0], a[1]
+    with open(path(j) + ".lock", "a") as lk:
+        fcntl.flock(lk, fcntl.LOCK_EX)
+        if cmd == "init":
+            if os.path.exists(path(j)): print("exists; resuming"); return 0
+            items = [l.strip() for l in open(a[2]) if l.strip()]
+            save(j, {"job": j, "created": time.time(), "items": items, "done": {}}); print(f"init {len(items)} items"); return 0
+        s = load(j)
+        if cmd == "next":
+            for i in s["items"]:
+                if i not in s["done"]: print(i); return 0
+            return 1
+        if cmd == "done":
+            if len(a) < 3: print("usage: ckpt done JOB ITEM [--note TEXT]"); return 2
+            i = a.index("--note") if "--note" in a else -1
+            note = a[i + 1] if 0 <= i < len(a) - 1 else ""
+            s["done"][a[2]] = {"at": time.time(), "note": note}; save(j, s); return 0
+        if cmd == "status":
+            print(json.dumps({"job": j, "total": len(s["items"]), "done": len(s["done"])})); return 0
+    print(__doc__); return 2
+sys.exit(main(sys.argv[1:]))
